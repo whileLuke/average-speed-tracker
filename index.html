@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>Average Speed Tracker — PWA</title>
+
+<!-- Leaflet -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<style>
+:root{
+  --bg:#0e172a; --panel:#0f172a; --muted:#94a3b8; --accent:#38bdf8; --ok:#10b981; --warn:#f59e0b; --bad:#ef4444; --card:#111827;
+}
+html,body{height:100%; margin:0; background:var(--bg); color:#f8fafc; font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial; -webkit-font-smoothing:antialiased;}
+.app { display:flex; flex-direction:column; height:100vh; gap:10px; padding:12px; box-sizing:border-box; }
+.header { display:flex; align-items:center; gap:12px; }
+.h-title{font-size:18px; font-weight:600;}
+.card { background:var(--panel); border-radius:12px; padding:12px; box-shadow:0 6px 20px rgba(2,6,23,0.6); }
+.inputs { display:grid; grid-template-columns: repeat(2,1fr); gap:8px; margin-top:8px; }
+label{font-size:12px; color:var(--muted); margin-bottom:4px; display:block;}
+input, button, select { width:100%; padding:10px; border-radius:8px; border: none; background:var(--card); color:#e6eef8; font-size:14px; }
+.small { font-size:12px; color:var(--muted); }
+.controls { display:flex; gap:8px; margin-top:10px; align-items:center; }
+button.primary { background:var(--accent); color:#042033; font-weight:700; }
+button.warn { background:#f97316; color:#071218; }
+button.disabled { background:#334155; color:var(--muted); cursor:not-allowed; }
+
+#map { height:40vh; border-radius:12px; overflow:hidden; }
+
+.row { display:flex; gap:8px; align-items:center; }
+.stat { flex:1; background: rgba(255,255,255,0.02); padding:10px; border-radius:10px; text-align:center; }
+.stat .num { font-size:18px; font-weight:700; }
+.stat .label { font-size:12px; color:var(--muted); margin-top:6px; }
+
+.footer { display:flex; gap:8px; align-items:center; justify-content:space-between; margin-top:6px; }
+
+.gauge-wrap { width:120px; height:120px; display:flex; align-items:center; justify-content:center; margin-right:12px; }
+.gauge-value { font-size:18px; font-weight:800; }
+
+.output { margin-top:8px; padding:8px; border-radius:8px; background:var(--card); font-size:13px; color:#e6eef8; }
+
+.legend { display:flex; gap:8px; font-size:12px; color:var(--muted); margin-top:6px; flex-wrap:wrap; }
+
+.warning { color:var(--warn); font-weight:700; }
+.ok { color:var(--ok); font-weight:700; }
+.bad { color:var(--bad); font-weight:700; }
+
+@media (min-width:900px){
+  .inputs { grid-template-columns: repeat(4,1fr); }
+  #map { height:55vh; }
+  .app { padding:20px; }
+}
+</style>
+
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0e172a" />
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <div class="h-title">Average Speed Tracker</div>
+  </div>
+
+  <div class="card">
+    <div class="inputs">
+      <div>
+        <label>Camera A Latitude</label>
+        <input id="latA" type="number" step="0.000001" placeholder="51.5074" />
+      </div>
+      <div>
+        <label>Camera A Longitude</label>
+        <input id="lonA" type="number" step="0.000001" placeholder="-0.1278" />
+      </div>
+      <div>
+        <label>Camera B Latitude</label>
+        <input id="latB" type="number" step="0.000001" placeholder="51.5174" />
+      </div>
+      <div>
+        <label>Camera B Longitude</label>
+        <input id="lonB" type="number" step="0.000001" placeholder="-0.0878" />
+      </div>
+    </div>
+
+    <div class="inputs" style="margin-top:10px;">
+      <div>
+        <label>Speed Limit (km/h)</label>
+        <input id="limit" type="number" placeholder="100" />
+      </div>
+      <div>
+        <label>Smoothing (last N positions for speed)</label>
+        <select id="smooth">
+          <option value="1">1 (raw)</option>
+          <option value="3" selected>3</option>
+          <option value="5">5</option>
+          <option value="10">10</option>
+        </select>
+      </div>
+      <div>
+        <label>Breadcrumb max points</label>
+        <input id="crumbMax" type="number" value="100" />
+      </div>
+      <div>
+        <label>Update handling interval (ms)</label>
+        <input id="interval" type="number" value="1000" />
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="startBtn" class="primary">Start Tracking</button>
+      <button id="stopBtn" class="warn" disabled>Stop</button>
+      <button id="centerBtn">Center Map</button>
+      <div style="flex:1"></div>
+      <div class="small">Allow location permission. Serve over HTTPS or localhost for full PWA support.</div>
+    </div>
+
+    <div class="legend">
+      <div><svg width="12" height="12"><rect width="12" height="12" fill="#38bdf8"/></svg> Camera points</div>
+      <div><svg width="12" height="12"><rect width="12" height="12" fill="#ffe066"/></svg> A→You→B path</div>
+      <div><svg width="12" height="12"><rect width="12" height="12" fill="#60a5fa"/></svg> Breadcrumb trail</div>
+    </div>
+  </div>
+
+  <div id="map" class="card"></div>
+
+  <div class="card" aria-live="polite">
+    <div style="display:flex; gap:12px; align-items:center;">
+      <div class="gauge-wrap" id="gaugeWrap"></div>
+
+      <div style="flex:1;">
+        <div style="display:flex; gap:8px;">
+          <div class="stat">
+            <div class="num" id="curSpeed">0.0 km/h</div>
+            <div class="label">Current speed</div>
+          </div>
+          <div class="stat">
+            <div class="num" id="avgSpeed">0.0 km/h</div>
+            <div class="label">Average from A</div>
+          </div>
+          <div class="stat">
+            <div class="num" id="reqSpeed">0.0 km/h</div>
+            <div class="label">Required avg (remaining)</div>
+          </div>
+        </div>
+
+        <div class="output" id="output">
+          <div id="distSoFar">Distance so far: —</div>
+          <div id="remDist">Remaining distance: —</div>
+          <div id="limitTxt">Speed limit: —</div>
+          <div id="recText" style="margin-top:6px;" class="small">Recommended speed to stay under limit: —</div>
+          <div id="timeInfo" style="margin-top:6px;" class="small">Elapsed: — • Time allowed total: —</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="font-size:12px; color:var(--muted);">
+    Tip: Add to home screen after serving on HTTPS. On iOS use Safari Share → "Add to Home Screen".
+  </div>
+</div>
+
+<script>
+/* ---------- Utilities ---------- */
+function toRad(d){ return d * Math.PI / 180; }
+function distanceKm(lat1,lon1,lat2,lon2){
+  const R = 6371;
+  const dLat = toRad(lat2-lat1);
+  const dLon = toRad(lon2-lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+const fmt = (n,d=2)=> isFinite(n) ? n.toFixed(d) : '—';
+const el=id=>document.getElementById(id);
+
+/* ---------- DOM refs ---------- */
+const startBtn = el('startBtn'), stopBtn = el('stopBtn'), centerBtn = el('centerBtn');
+const latAEl=el('latA'), lonAEl=el('lonA'), latBEl=el('latB'), lonBEl=el('lonB');
+const limitEl=el('limit'), smoothEl=el('smooth'), crumbMaxEl=el('crumbMax'), intervalEl=el('interval');
+const curSpeedEl=el('curSpeed'), avgSpeedEl=el('avgSpeed'), reqSpeedEl=el('reqSpeed');
+const distSoFarEl=el('distSoFar'), remDistEl=el('remDist'), limitTxt=el('limitTxt');
+const recText = el('recText'), timeInfo=el('timeInfo'), gaugeWrap = el('gaugeWrap');
+
+/* ---------- Map / markers ---------- */
+let map, markerA, markerB, userMarker, abPath, breadcrumb, breadcrumbCoords = [];
+let watchId = null, startTime = null;
+let totalDist = 0;
+let rawPositions = []; // {lat,lon,ts}
+
+/* ---------- Map init ---------- */
+function initMap(lat=51.5074, lon=-0.1278){
+  if(map) return;
+  map = L.map('map', {zoomControl:true}).setView([lat,lon], 13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'© OpenStreetMap contributors' }).addTo(map);
+  breadcrumb = L.polyline([], { color:'#60a5fa', weight:4, opacity:0.9 }).addTo(map);
+}
+
+/* ---------- Dual Gauge (SVG) ---------- */
+function createDualGauge(maxSpeed=200){
+  gaugeWrap.innerHTML = '';
+  const size = 120, strokeOuter = 14, strokeInner = 10, r = (size - strokeOuter)/2;
+  const svgNS='http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNS,'svg');
+  svg.setAttribute('viewBox',`0 0 ${size} ${size}`);
+  svg.style.display='block';
+
+  const startAng = Math.PI*1.15;
+  const endAng = Math.PI*1.85; // smaller sweep than half circle for visual
+
+  function arcPath(a1,a2,rad){
+    const toXY = a=> [ size/2 + rad*Math.cos(a), size/2 + rad*Math.sin(a) ];
+    const [x1,y1] = toXY(a1), [x2,y2] = toXY(a2);
+    const large = (a2-a1) > Math.PI ? 1 : 0;
+    return `M ${x1} ${y1} A ${rad} ${rad} 0 ${large} 1 ${x2} ${y2}`;
+  }
+
+  // background arcs
+  const bgOuter = document.createElementNS(svgNS,'path');
+  bgOuter.setAttribute('d', arcPath(startAng,endAng,r));
+  bgOuter.setAttribute('fill','none');
+  bgOuter.setAttribute('stroke','rgba(255,255,255,0.05)');
+  bgOuter.setAttribute('stroke-width', strokeOuter);
+  svg.appendChild(bgOuter);
+
+  const bgInner = document.createElementNS(svgNS,'path');
+  bgInner.setAttribute('d', arcPath(startAng,endAng,r - 12));
+  bgInner.setAttribute('fill','none');
+  bgInner.setAttribute('stroke','rgba(255,255,255,0.03)');
+  bgInner.setAttribute('stroke-width', strokeInner);
+  svg.appendChild(bgInner);
+
+  // avg arc (inner, thicker/softer)
+  const avgArc = document.createElementNS(svgNS,'path');
+  avgArc.setAttribute('d', arcPath(startAng,startAng,r - 12));
+  avgArc.setAttribute('fill','none');
+  avgArc.setAttribute('stroke','#60a5fa');
+  avgArc.setAttribute('stroke-width', strokeInner-2);
+  avgArc.setAttribute('stroke-linecap','round');
+  svg.appendChild(avgArc);
+
+  // current arc (outer)
+  const curArc = document.createElementNS(svgNS,'path');
+  curArc.setAttribute('d', arcPath(startAng,startAng,r));
+  curArc.setAttribute('fill','none');
+  curArc.setAttribute('stroke','#38bdf8');
+  curArc.setAttribute('stroke-width', strokeOuter-2);
+  curArc.setAttribute('stroke-linecap','round');
+  svg.appendChild(curArc);
+
+  // text center
+  const avgText = document.createElementNS(svgNS,'text');
+  avgText.setAttribute('x','50%'); avgText.setAttribute('y','58%');
+  avgText.setAttribute('dominant-baseline','middle'); avgText.setAttribute('text-anchor','middle');
+  avgText.setAttribute('font-size','12'); avgText.setAttribute('font-weight','600'); avgText.setAttribute('fill','#cdeafe');
+  avgText.textContent = 'avg 0';
+  svg.appendChild(avgText);
+
+  const curText = document.createElementNS(svgNS,'text');
+  curText.setAttribute('x','50%'); curText.setAttribute('y','70%');
+  curText.setAttribute('dominant-baseline','middle'); curText.setAttribute('text-anchor','middle');
+  curText.setAttribute('font-size','16'); curText.setAttribute('font-weight','800'); curText.setAttribute('fill','#ffffff');
+  curText.textContent = '0';
+  svg.appendChild(curText);
+
+  gaugeWrap.appendChild(svg);
+
+  function set(curVal, avgVal, max=maxSpeed){
+    const clamp = v => Math.max(0, Math.min(v, max));
+    const c = clamp(curVal), a = clamp(avgVal);
+    const sweep = (endAng - startAng);
+
+    const pctCur = c / max;
+    const angCur = startAng + sweep * pctCur;
+    curArc.setAttribute('d', arcPath(startAng, angCur, r));
+
+    const pctAvg = a / max;
+    const angAvg = startAng + sweep * pctAvg;
+    avgArc.setAttribute('d', arcPath(startAng, angAvg, r - 12));
+
+    // color logic
+    let curCol = '#10b981';
+    if(pctCur > 0.6) curCol = '#f59e0b';
+    if(pctCur > 0.9) curCol = '#ef4444';
+    curArc.setAttribute('stroke', curCol);
+
+    avgText.textContent = 'avg ' + (isFinite(avgVal) ? avgVal.toFixed(1) : '—');
+    curText.textContent = (isFinite(curVal) ? curVal.toFixed(1) : '0');
+  }
+
+  return { set };
+}
+
+const gauge = createDualGauge(240); // maximum dial range (km/h), adjust if needed
+
+/* ---------- Speed and breadcrumb helpers ---------- */
+function addBreadcrumb(pt){
+  breadcrumbCoords.push(pt);
+  const maxPts = Math.max(10, parseInt(crumbMaxEl.value || 100));
+  if(breadcrumbCoords.length > maxPts) breadcrumbCoords.shift();
+  breadcrumb.setLatLngs(breadcrumbCoords);
+}
+
+function centerMapToBounds(){
+  if(!map) return;
+  const bounds = [];
+  if(markerA) bounds.push(markerA.getLatLng());
+  if(markerB) bounds.push(markerB.getLatLng());
+  if(userMarker) bounds.push(userMarker.getLatLng());
+  if(bounds.length) map.fitBounds(bounds, {padding:[60,60]});
+}
+
+function speedBetween(p1,p2){
+  if(!p1 || !p2) return 0;
+  const km = distanceKm(p1.lat,p1.lon,p2.lat,p2.lon);
+  const sec = (p2.ts - p1.ts)/1000;
+  if(sec <= 0) return 0;
+  return (km / (sec/3600));
+}
+
+function smoothedSpeed(positions,n){
+  if(positions.length < 2) return 0;
+  const speeds = [];
+  for(let i=1;i<positions.length;i++){
+    speeds.push(speedBetween(positions[i-1], positions[i]));
+  }
+  const lastN = speeds.slice(Math.max(0, speeds.length - n));
+  const sum = lastN.reduce((a,b)=>a+b,0);
+  return sum / (lastN.length || 1);
+}
+
+/* ---------- Start / Stop ---------- */
+startBtn.addEventListener('click', ()=>{
+  const latA = parseFloat(latAEl.value);
+  const lonA = parseFloat(lonAEl.value);
+  const latB = parseFloat(latBEl.value);
+  const lonB = parseFloat(lonBEl.value);
+  const limit = parseFloat(limitEl.value);
+  const smoothing = parseInt(smoothEl.value || '3');
+
+  if([latA,lonA,latB,lonB,limit].some(v=>isNaN(v))){
+    alert('Please fill camera coordinates and speed limit.');
+    return;
+  }
+
+  initMap(latA, lonA);
+
+  // camera markers
+  if(markerA) markerA.remove();
+  if(markerB) markerB.remove();
+  markerA = L.marker([latA,lonA], {title:'Camera A'}).addTo(map).bindPopup('Camera A');
+  markerB = L.marker([latB,lonB], {title:'Camera B'}).addTo(map).bindPopup('Camera B');
+
+  // AB path (will include user mid point)
+  if(abPath) abPath.remove();
+  abPath = L.polyline([[latA,lonA],[latB,lonB]], {color:'#ffe066', weight:4, dashArray:'6,6'}).addTo(map);
+
+  totalDist = distanceKm(latA,lonA,latB,lonB);
+  startTime = Date.now();
+  rawPositions = [];
+  breadcrumbCoords = [];
+  breadcrumb.setLatLngs([]);
+
+  if(userMarker) userMarker.remove();
+  userMarker = L.circleMarker([latA,lonA], {radius:8, color:'#38bdf8', fillOpacity:0.9}).addTo(map).bindPopup('You');
+
+  if(navigator.geolocation){
+    const options = { enableHighAccuracy:true, maximumAge:500, timeout:10000 };
+    watchId = navigator.geolocation.watchPosition(pos=>{
+      const latitude = pos.coords.latitude, longitude = pos.coords.longitude;
+      const now = Date.now();
+      const p = { lat:latitude, lon:longitude, ts: now };
+      rawPositions.push(p);
+      if(rawPositions.length > 300) rawPositions.shift();
+
+      // calc smoothed instantaneous speed
+      const curInst = smoothedSpeed(rawPositions, smoothing);
+
+      // average from A
+      const elapsedH = (now - startTime) / 3600000;
+      const distSoFar = distanceKm(latA,lonA, latitude, longitude);
+      const avgFromA = elapsedH > 0 ? (distSoFar / elapsedH) : 0;
+
+      // remaining and required
+      const remaining = Math.max(totalDist - distSoFar, 0);
+      const totalTimeAllowed = totalDist / limit;
+      const remainingTimeAllowed = totalTimeAllowed - elapsedH;
+      const requiredAvg = remainingTimeAllowed > 0 ? (remaining / remainingTimeAllowed) : Infinity;
+
+      // recommended speed (never above limit)
+      let recommended = requiredAvg;
+      let recMessage = '';
+      if(!isFinite(requiredAvg)){
+        recommended = limit; // not enough info, default to limit
+        recMessage = 'Not enough time remaining to compute—play safe at or below the limit.';
+      } else if(requiredAvg <= limit){
+        recommended = requiredAvg;
+        recMessage = `To stay within the limit, average ≤ ${fmt(recommended,1)} km/h for the remainder.`;
+      } else {
+        // requiredAvg > limit — we will NOT recommend > limit
+        recommended = limit;
+        recMessage = `Required average exceeds the limit (${fmt(requiredAvg,1)} km/h). Do not exceed ${fmt(limit,0)} km/h — slow down or extend time.`;
+      }
+
+      // update UI
+      curSpeedEl.textContent = fmt(curInst,1) + ' km/h';
+      avgSpeedEl.textContent = fmt(avgFromA,1) + ' km/h';
+      reqSpeedEl.textContent = (isFinite(requiredAvg) ? fmt(requiredAvg,1)+' km/h' : '—');
+      distSoFarEl.textContent = 'Distance so far: ' + fmt(distSoFar,3) + ' km';
+      remDistEl.textContent = 'Remaining distance: ' + fmt(remaining,3) + ' km';
+      limitTxt.textContent = 'Speed limit: ' + fmt(limit) + ' km/h';
+      recText.textContent = recMessage;
+      if(requiredAvg > limit) recText.className = 'small warning'; else recText.className = 'small ok';
+
+      const allowedTotalStr = isFinite(totalTimeAllowed) ? (fmt(totalTimeAllowed,2)+' h') : '—';
+      timeInfo.textContent = 'Elapsed: ' + (fmt(elapsedH*60,1) + ' min') + ' • Time allowed total: ' + allowedTotalStr;
+
+      // update gauge: show both current and average (visual)
+      gauge.set(curInst, avgFromA);
+
+      // update map
+      userMarker.setLatLng([latitude,longitude]);
+      addBreadcrumb([latitude,longitude]);
+      abPath.setLatLngs([[latA,lonA],[latitude,longitude],[latB,lonB]]);
+
+      if(rawPositions.length === 1) centerMapToBounds();
+
+    }, err=>{
+      console.warn('GPS error', err);
+      alert('GPS error: ' + (err.message || err.code));
+    }, options);
+  } else {
+    alert('Geolocation not supported in this browser.');
+  }
+
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+});
+
+stopBtn.addEventListener('click', ()=>{
+  if(watchId){ navigator.geolocation.clearWatch(watchId); watchId = null; }
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+});
+
+centerBtn.addEventListener('click', centerMapToBounds);
+initMap();
+
+/* register service worker */
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    console.log('SW registered', reg);
+  }).catch(err=>console.warn('SW register failed', err));
+}
+</script>
+</body>
+</html>
